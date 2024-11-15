@@ -125,6 +125,8 @@ def cc_toolchain_config(
 
     # Default compiler flags:
     compile_flags = [
+        "-idirafter",
+        "/nix/store/932dj5qwfzck90mnvqpd1f9hjqznaqdj-glibc-2.40-36-dev/include",
         "--target=" + target_system_name,
         # Security
         "-U_FORTIFY_SOURCE",  # https://github.com/google/sanitizers/issues/247
@@ -197,10 +199,21 @@ def cc_toolchain_config(
         # only option.
         use_lld = True
         link_flags.extend([
+            "-no-pie",  # Very important to avoid "relocation R_X86_64_64 cannot be used against symbol"
             "-fuse-ld=lld",
             "-Wl,--build-id=md5",
             "-Wl,--hash-style=gnu",
             "-Wl,-z,relro,-z,now",
+            "-Wl,--push-state,-as-needed",
+            "-L",
+            "/nix/store/3bvxjkkmwlymr0fssczhgi39c3aj1l7i-glibc-2.40-36/lib",
+            "-lpthread",
+            "-Wl,--pop-state",
+            "-Wl,--push-state,-as-needed",
+            "-L",
+            "/nix/store/3bvxjkkmwlymr0fssczhgi39c3aj1l7i-glibc-2.40-36/lib",
+            "-ldl",
+            "-Wl,--pop-state",
         ])
         use_libtool = False
 
@@ -235,9 +248,6 @@ def cc_toolchain_config(
             compiler_rt_link_flags = ["-rtlib=compiler-rt"]
             libunwind_link_flags = [
                 "-l:libunwind.a",
-                # To support libunwind.
-                "-lpthread",
-                "-ldl",
             ]
         else:
             # Several system libraries on macOS dynamically link libc++ and
@@ -290,6 +300,12 @@ def cc_toolchain_config(
         ])
     else:
         fail("Unknown value passed for stdlib: {stdlib}".format(stdlib = stdlib))
+
+    link_flags.extend([
+        "-Wl,--push-state,-as-needed",
+        "-B/nix/store/3bvxjkkmwlymr0fssczhgi39c3aj1l7i-glibc-2.40-36/lib",
+        "-Wl,--pop-state",
+    ])
 
     opt_link_flags = ["-Wl,--gc-sections"] if target_os == "linux" else []
 

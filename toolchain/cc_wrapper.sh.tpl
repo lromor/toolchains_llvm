@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/nix/store/w5sqzx52lq2jg18wgnlv26knjwzhwziy-bash/bin/bash
 #
 # Copyright 2021 The Bazel Authors. All rights reserved.
 #

@@ -70,6 +70,7 @@ _known_distros = [
     "rhel",
     "ol",
     "almalinux",
+    "nixos",
 ]
 
 def _linux_dist(rctx):

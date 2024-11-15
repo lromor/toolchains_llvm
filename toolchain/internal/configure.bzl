@@ -338,6 +338,10 @@ def _cc_toolchain_str(
         sysroot_prefix = "%sysroot%"
     if target_os == "linux":
         cxx_builtin_include_directories.extend([
+            # Libraries containing gcc fundamental libs.
+            "/nix/store/932dj5qwfzck90mnvqpd1f9hjqznaqdj-glibc-2.40-36-dev/include",
+            "/nix/store/h4xcr5vxpz2wj4igjwdw85vjcxicspbx-linux-headers-6.10/include",
+            "/nix/store/3bvxjkkmwlymr0fssczhgi39c3aj1l7i-glibc-2.40-36/lib",
             _join(sysroot_prefix, "/include"),
             _join(sysroot_prefix, "/usr/include"),
             _join(sysroot_prefix, "/usr/local/include"),
