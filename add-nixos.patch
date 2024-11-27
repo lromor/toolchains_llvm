@@ -1,0 +1,98 @@
+diff --git a/toolchain/cc_toolchain_config.bzl b/toolchain/cc_toolchain_config.bzl
+index 7bb55f3..ab1d8f1 100644
+--- a/toolchain/cc_toolchain_config.bzl
++++ b/toolchain/cc_toolchain_config.bzl
+@@ -125,6 +125,8 @@ def cc_toolchain_config(
+ 
+     # Default compiler flags:
+     compile_flags = [
++        "-idirafter",
++        "@glibcDevPath@/include",
+         "--target=" + target_system_name,
+         # Security
+         "-U_FORTIFY_SOURCE",  # https://github.com/google/sanitizers/issues/247
+@@ -197,10 +199,21 @@ def cc_toolchain_config(
+         # only option.
+         use_lld = True
+         link_flags.extend([
++            "-pie",
+             "-fuse-ld=lld",
+             "-Wl,--build-id=md5",
+             "-Wl,--hash-style=gnu",
+             "-Wl,-z,relro,-z,now",
++            "-Wl,--push-state,-as-needed",
++            "-L",
++            "@glibcPath@/lib",
++            "-lpthread",
++            "-Wl,--pop-state",
++            "-Wl,--push-state,-as-needed",
++            "-L",
++            "@glibcPath@/lib",
++            "-ldl",
++            "-Wl,--pop-state",
+         ])
+         use_libtool = False
+ 
+@@ -235,9 +248,6 @@ def cc_toolchain_config(
+             compiler_rt_link_flags = ["-rtlib=compiler-rt"]
+             libunwind_link_flags = [
+                 "-l:libunwind.a",
+-                # To support libunwind.
+-                "-lpthread",
+-                "-ldl",
+             ]
+         else:
+             # Several system libraries on macOS dynamically link libc++ and
+@@ -291,6 +301,12 @@ def cc_toolchain_config(
+     else:
+         fail("Unknown value passed for stdlib: {stdlib}".format(stdlib = stdlib))
+ 
++    link_flags.extend([
++        "-Wl,--push-state,-as-needed",
++        "-B@glibcPath@/lib",
++        "-Wl,--pop-state",
++    ])
++
+     opt_link_flags = ["-Wl,--gc-sections"] if target_os == "linux" else []
+ 
+     # Coverage flags:
+diff --git a/toolchain/internal/common.bzl b/toolchain/internal/common.bzl
+index fe56b6a..63db9a4 100644
+--- a/toolchain/internal/common.bzl
++++ b/toolchain/internal/common.bzl
+@@ -70,6 +70,7 @@ _known_distros = [
+     "rhel",
+     "ol",
+     "almalinux",
++    "nixos",
+ ]
+ 
+ def _linux_dist(rctx):
+diff --git a/toolchain/internal/configure.bzl b/toolchain/internal/configure.bzl
+index 37a0ab6..740d110 100644
+--- a/toolchain/internal/configure.bzl
++++ b/toolchain/internal/configure.bzl
+@@ -338,6 +338,10 @@ def _cc_toolchain_str(
+         sysroot_prefix = "%sysroot%"
+     if target_os == "linux":
+         cxx_builtin_include_directories.extend([
++            # Libraries containing gcc fundamental libs.
++            "@glibcDevPath@/include",
++            "@linuxHeadersPath@/include",
++            "@glibcPath@/lib",
+             _join(sysroot_prefix, "/include"),
+             _join(sysroot_prefix, "/usr/include"),
+             _join(sysroot_prefix, "/usr/local/include"),
+diff --git a/toolchain/internal/release_name.bzl b/toolchain/internal/release_name.bzl
+index a390a48..0cf8d0c 100755
+--- a/toolchain/internal/release_name.bzl
++++ b/toolchain/internal/release_name.bzl
+@@ -187,6 +187,8 @@ def _linux(llvm_version, distname, version, arch):
+         os_name = "linux-gnueabihf"
+     elif distname in ["rhel", "ol", "almalinux"]:
+         os_name = _rhel_osname(arch, version, major_llvm_version, llvm_version)
++    elif distname == "nixos":
++        os_name = _ubuntu_osname(arch, version, major_llvm_version, llvm_version)
+ 
+     if not os_name:
+         fail("Unsupported linux distribution and version: %s, %s" % (distname, version))
