@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Copyright 2022 The Bazel Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -euo pipefail
+set -eu
 
 use_github_host=0
 tmp_dir=
@@ -37,8 +37,8 @@ while getopts "t:v:gh" opt; do
   esac
 done
 
-if [[ -z ${llvm_version-} ]]; then
-  echo "Usage: ${BASH_SOURCE[0]} [-t <tempdir>] [-g] -v <llvm_version>"
+if [ -z "${llvm_version:-}" ]; then
+  echo "Usage: $0 [-t <tempdir>] [-g] -v <llvm_version>"
   exit 1
 fi
 
@@ -48,17 +48,17 @@ cleanup() {
   exit "${rc}"
 }
 
-if [[ -z "${tmp_dir}" ]]; then
+if [ -z "${tmp_dir}" ]; then
   tmp_dir="$(mktemp -d)"
   echo "Using temp dir: '${tmp_dir}'"
   trap 'cleanup' INT HUP QUIT TERM EXIT
-elif [[ ! -r "${tmp_dir}" ]]; then
+elif [ ! -r "${tmp_dir}" ]; then
   echo "Temp directory does not exist: '${tmp_dir}'."
   exit 2
 fi
 
 llvm_host() {
-  local url_base="releases.llvm.org/${llvm_version}"
+  url_base="releases.llvm.org/${llvm_version}"
   output_dir="${tmp_dir}/${url_base}"
   wget --recursive --level 1 --directory-prefix="${tmp_dir}" \
     --accept-regex "(clang%2bllvm|LLVM)-.*tar.(xz|gz)$" "http://${url_base}/"
@@ -77,7 +77,7 @@ github_host() {
   )
 }
 
-if ((use_github_host)); then
+if [ "${use_github_host}" -ne 0 ]; then
   github_host
 else
   llvm_host

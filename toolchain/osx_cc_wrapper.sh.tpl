@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # Copyright 2015 The Bazel Authors. All rights reserved.
 #
@@ -27,7 +27,7 @@
 
 # shellcheck disable=SC1083
 
-set -euo pipefail
+set -eu
 
 INSTALL_NAME_TOOL="/usr/bin/install_name_tool"
 
@@ -35,31 +35,30 @@ LIBS=
 LIB_DIRS=
 RPATHS=
 OUTPUT=
-CLEANUP_FILES=()
+CLEANUP_FILES=""
 
-function cleanup() {
-  if [[ ${#CLEANUP_FILES[@]} -gt 0 ]]; then
-    rm -f "${CLEANUP_FILES[@]}"
-  fi
+cleanup() {
+  for f in ${CLEANUP_FILES}; do
+    [ -n "${f}" ] && rm -f "${f}"
+  done
 }
 
 trap cleanup EXIT
 
-function parse_option() {
-  local -r opt="$1"
-  if [[ ${OUTPUT} == "1" ]]; then
+expect_output=0
+parse_option() {
+  opt="$1"
+  if [ "${expect_output}" = 1 ]; then
     OUTPUT=${opt}
-  elif [[ ${opt} =~ ^-l(.*)$ ]]; then
-    LIBS="${BASH_REMATCH[1]} ${LIBS}"
-  elif [[ ${opt} =~ ^-L(.*)$ ]]; then
-    LIB_DIRS="${BASH_REMATCH[1]} ${LIB_DIRS}"
-  elif [[ ${opt} =~ ^\@loader_path/(.*)$ ]]; then
-    RPATHS="${BASH_REMATCH[1]} ${RPATHS}"
-  elif [[ ${opt} =~ ^-Wl,-rpath,\@loader_path/(.*)$ ]]; then
-    RPATHS="${BASH_REMATCH[1]} ${RPATHS}"
-  elif [[ ${opt} == "-o" ]]; then
-    # output is coming
-    OUTPUT=1
+    expect_output=0
+  else
+    case "${opt}" in
+      -l*) LIBS="${opt#-l} ${LIBS}" ;;
+      -L*) LIB_DIRS="${opt#-L} ${LIB_DIRS}" ;;
+      @loader_path/*) RPATHS="${opt#@loader_path/} ${RPATHS}" ;;
+      -Wl,-rpath,@loader_path/*) RPATHS="${opt#-Wl,-rpath,@loader_path/} ${RPATHS}" ;;
+      -o) expect_output=1 ;;
+    esac
   fi
 }
 
@@ -85,79 +84,95 @@ function parse_option() {
 #
 
 dirname_shim() {
-  local path="$1"
-
+  path="$1"
   # Remove trailing slashes
-  path="${path%/}"
-
-  # If there's no slash, return "."
-  if [[ "${path}" != */* ]]; then
-    echo "."
-    return
-  fi
-
-  # Remove the last component after the final slash
-  path="${path%/*}"
-
-  # If it becomes empty, it means root "/"
-  echo "${path:-/}"
+  while [ "${path%/}" != "${path}" ]; do path=${path%/}; done
+  case "${path}" in
+    */*) path=${path%/*}; [ -n "${path}" ] || path="/"; echo "${path}" ;;
+    *) echo "." ;;
+  esac
 }
 
-script_dir=$(dirname_shim "${BASH_SOURCE[0]}")
+script_dir=$(dirname_shim "$0")
 toolchain_path_prefix="%{toolchain_path_prefix}"
 # Sometimes this path may be an absolute path in which case we dont do anything because
 # This is using the host toolchain to build.
-if [[ ${toolchain_path_prefix} != /* ]]; then
-  toolchain_path_prefix="${script_dir}/../../${toolchain_path_prefix#external/}"
-  toolchain_path_prefix_abs="$(cd "${toolchain_path_prefix}" && pwd -P)/"
-else
-  toolchain_path_prefix_abs="${toolchain_path_prefix}"
-fi
+case "${toolchain_path_prefix}" in
+  /*)
+    toolchain_path_prefix_abs="${toolchain_path_prefix}"
+    ;;
+  *)
+    toolchain_path_prefix="${script_dir}/../../${toolchain_path_prefix#external/}"
+    toolchain_path_prefix_abs="$(cd "${toolchain_path_prefix}" && pwd -P)/"
+    ;;
+esac
 
-if [[ ! -f ${toolchain_path_prefix}bin/clang ]]; then
+if [ ! -f "${toolchain_path_prefix}bin/clang" ]; then
   echo >&2 "ERROR: could not find clang; PWD=\"${PWD}\"; PATH=\"${PATH}\"; toolchain_path_prefix=${toolchain_path_prefix}."
   exit 5
 fi
 
-function sanitize_option() {
-  local -r opt=$1
-  if [[ ${opt} == */cc_wrapper.sh ]]; then
-    printf "%s" "${toolchain_path_prefix}bin/clang"
-  elif [[ ${opt} == "-fuse-ld=ld64.lld" ]]; then
-    echo "--ld-path=${toolchain_path_prefix_abs}bin/ld64.lld"
-  elif [[ ${opt} =~ ^-fsanitize-(ignore|black)list=[^/] ]] && [[ ${script_dir} == /* ]]; then
-    # shellcheck disable=SC2206
-    parts=(${opt/=/ }) # Split flag name and value into array.
-    printf "%s" "${parts[0]}=${script_dir}/../../../${parts[1]}"
-  else
-    printf "%s" "${opt}"
-  fi
+sanitize_option() {
+  opt=$1
+  case "${opt}" in
+    */cc_wrapper.sh)
+      printf "%s" "${toolchain_path_prefix}bin/clang" ;;
+    -fuse-ld=ld64.lld)
+      printf "%s" "--ld-path=${toolchain_path_prefix_abs}bin/ld64.lld" ;;
+    -fsanitize-ignorelist=*|-fsanitize-blacklist=*)
+      val=${opt#*=}
+      name=${opt%%=*}
+      case "${val}" in
+        /*) printf "%s" "${opt}" ;;
+        *) case "${script_dir}" in
+             /*) printf "%s" "${name}=${script_dir}/../../../${val}" ;;
+             *) printf "%s" "${opt}" ;;
+           esac ;;
+      esac ;;
+    *) printf "%s" "${opt}" ;;
+  esac
 }
 
-cmd=()
-for ((i = 0; i <= $#; i++)); do
-  if [[ ${!i} == @* && -r "${i:1}" ]]; then
-    tmpfile=$(mktemp)
-    CLEANUP_FILES+=("${tmpfile}")
-    while IFS= read -r opt; do
-      if [[ ${opt} == "-fuse-ld=ld64.lld" ]]; then
-        echo "-fuse-ld=lld" >>"${tmpfile}"
+## Build sanitized command line; start with compiler
+origc=0
+for a in "$@"; do
+  origc=$((origc + 1))
+  eval "orig_${origc}=\$a"
+done
+
+set -- "${toolchain_path_prefix}bin/clang"
+
+i=1
+while [ "$i" -le "$origc" ]; do
+  eval "arg=\${orig_${i}}"
+  case "${arg}" in
+    @*)
+      file=${arg#@}
+      if [ -r "${file}" ]; then
+        tmpfile=$(mktemp)
+        CLEANUP_FILES="${CLEANUP_FILES} ${tmpfile}"
+        while IFS= read -r opt; do
+          if [ "${opt}" = "-fuse-ld=ld64.lld" ]; then
+            printf "%s\n" "-fuse-ld=lld" >>"${tmpfile}"
+          fi
+          sopt=$(sanitize_option "${opt}")
+          parse_option "${sopt}"
+          printf "%s\n" "${sopt}" >>"${tmpfile}"
+        done <"${file}"
+        set -- "$@" "@${tmpfile}"
+      else
+        sarg=$(sanitize_option "${arg}")
+        parse_option "${sarg}"
+        set -- "$@" "${sarg}"
       fi
-      opt="$(
-        set -e
-        sanitize_option "${opt}"
-      )"
-      parse_option "${opt}" >>"${tmpfile}"
-    done <"${!i:1}"
-    cmd+=("@${tmpfile}")
-  else
-    opt="$(
-      set -e
-      sanitize_option "${!i}"
-    )"
-    parse_option "${opt}"
-    cmd+=("${opt}")
-  fi
+      ;;
+    *)
+      sarg=$(sanitize_option "${arg}")
+      parse_option "${sarg}"
+      set -- "$@" "${sarg}"
+      ;;
+  esac
+  i=$((i + 1))
 done
 
 # On macOS, we use ld as the linker for single-platform builds (i.e., when not
@@ -176,23 +191,24 @@ done
 # Let's restore /usr/bin to PATH in such cases. Note that /usr/bin is not a
 # writeable directory on macOS even with sudo privileges, so it should be safe
 # to add it to PATH even when the application wants to use a very strict PATH.
-if [[ ":${PATH}:" != *":/usr/bin:"* ]]; then
-  PATH="${PATH}:/usr/bin"
-fi
+case ":${PATH}:" in
+  *":/usr/bin:"*) ;;
+  *) PATH="${PATH}:/usr/bin" ;;
+esac
 
 # Call the C++ compiler.
-"${cmd[@]}"
+"$@"
 
 # Generate an empty file if header processing succeeded.
-if [[ "${OUTPUT}" == *.h.processed ]]; then
-  echo -n >"${OUTPUT}"
-fi
+case "${OUTPUT}" in
+  *.h.processed) : >"${OUTPUT}" ;;
+esac
 
-function get_library_path() {
+get_library_path() {
   for libdir in ${LIB_DIRS}; do
-    if [[ -f "${libdir}/lib$1".so ]]; then
+    if [ -f "${libdir}/lib$1.so" ]; then
       echo "${libdir}/lib$1.so"
-    elif [[ -f "${libdir}"/lib"$1".dylib ]]; then
+    elif [ -f "${libdir}/lib$1.dylib" ]; then
       echo "${libdir}/lib$1.dylib"
     fi
   done
@@ -200,19 +216,18 @@ function get_library_path() {
 
 # A convenient method to return the actual path even for non symlinks
 # and multi-level symlinks.
-function get_realpath() {
-  local previous="$1"
-  local next
-  next="$(readlink "${previous}")"
-  while [[ -n ${next} ]]; do
+get_realpath() {
+  previous="$1"
+  while :; do
+    next=$(readlink "${previous}" 2>/dev/null || true)
+    [ -n "${next}" ] || break
     previous="${next}"
-    next=$(readlink "${previous}")
   done
   echo "${previous}"
 }
 
 # Get the path of a lib inside a tool
-function get_otool_path() {
+get_otool_path() {
   # the lib path is the path of the original lib relative to the workspace
   get_realpath "$1" | sed 's|^.*/bazel-out/|bazel-out/|'
 }
@@ -221,16 +236,16 @@ function get_otool_path() {
 for rpath in ${RPATHS}; do
   for lib in ${LIBS}; do
     unset libname
-    if [[ -f "$(dirname "${OUTPUT}")/${rpath}/lib${lib}.so" ]]; then
+    if [ -f "$(dirname "${OUTPUT}")/${rpath}/lib${lib}.so" ]; then
       libname="lib${lib}.so"
-    elif [[ -f "$(dirname "${OUTPUT}")/${rpath}/lib${lib}.dylib" ]]; then
+    elif [ -f "$(dirname "${OUTPUT}")/${rpath}/lib${lib}.dylib" ]; then
       libname="lib${lib}.dylib"
     fi
     # ${libname-} --> return $libname if defined, or undefined otherwise. This is to make
     # this set -e friendly
-    if [[ -n ${libname-} ]]; then
+    if [ -n "${libname-}" ]; then
       libpath="$(get_library_path "${lib}")"
-      if [[ -n ${libpath} ]]; then
+      if [ -n "${libpath}" ]; then
         otool_path="$(get_otool_path "${libpath}")"
         "${INSTALL_NAME_TOOL}" -change "${otool_path}" \
           "@loader_path/${rpath}/${libname}" "${OUTPUT}"
